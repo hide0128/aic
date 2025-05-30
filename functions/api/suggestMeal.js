@@ -1,42 +1,10 @@
 
 // functions/api/suggestMeal.js
-// Note: @google/genai must be available in the Cloudflare Functions environment.
-// Typically, for Cloudflare Pages Functions, you'd add dependencies to your project's package.json
-// and Cloudflare would bundle them. If direct import doesn't work, you might need to adjust
-// how dependencies are handled or use a version of the SDK compatible with CF Workers (e.g. via esm.sh if allowed).
-// For now, this assumes @google/genai can be imported.
-// If not, you'd need to use the Fetch API to call Gemini REST API directly.
 
-// Placeholder for GoogleGenAI import. In a real CF Worker/Function environment,
-// you'd need to ensure this dependency is correctly resolved.
-// For simplicity in this example, we'll assume it's globally available or correctly bundled.
-// import { GoogleGenAI } from "@google/genai"; // This might not work directly without bundling
-
-// A more robust way for Cloudflare Functions if @google/genai isn't directly importable
-// without a build step for the function itself, would be to use a dynamic import from a CDN
-// or use the REST API directly.
-// However, the guideline specifies using the SDK.
-
-// Let's assume a bundler or CF's system makes this available:
-// You would need to ensure your `package.json` includes "@google/genai"
-// and your Cloudflare Pages build process bundles Functions correctly.
-
-async function getGoogleGenAI(apiKey) {
-  if (typeof GoogleGenAI === 'undefined') {
-    // Attempt to dynamically import if not globally available (ESM-style)
-    // This is a common pattern in environments like Deno or modern Workers.
-    // Cloudflare Functions might have specific ways to handle external modules.
-    try {
-        const genAImodule = await import("https://esm.sh/@google/genai@^1.1.0");
-        return new genAImodule.GoogleGenAI({ apiKey });
-    } catch (e) {
-        console.error("Failed to dynamically import @google/genai:", e);
-        throw new Error("GoogleGenAI SDK not available");
-    }
-  }
-  return new GoogleGenAI({ apiKey });
-}
-
+// The @google/genai SDK is imported dynamically from esm.sh.
+// This is a common approach for environments like Cloudflare Functions
+// when a traditional build step with package.json bundling for the function
+// itself is not explicitly configured or to ensure the latest compatible version is used.
 
 export async function onRequestPost(context) {
   try {
@@ -52,12 +20,19 @@ export async function onRequestPost(context) {
 
     let ai;
     try {
-        // Dynamically import GoogleGenAI as it might not be available globally in CF Pages Functions
-        const genAIModule = await import('https://esm.sh/@google/genai@^1.1.0');
+        // Dynamically import the latest stable GoogleGenAI SDK from esm.sh
+        // Using '@google/genai' without a specific version fetches the latest stable.
+        const genAIModule = await import('https://esm.sh/@google/genai');
+        
+        if (!genAIModule || !genAIModule.GoogleGenAI) {
+            console.error("GoogleGenAI class not found in the imported module from esm.sh. Module content:", genAIModule);
+            throw new Error("Failed to load GoogleGenAI class from SDK via esm.sh.");
+        }
         ai = new genAIModule.GoogleGenAI({ apiKey });
     } catch (e) {
         console.error("Failed to initialize GoogleGenAI in Cloudflare Function:", e);
-        return new Response(JSON.stringify({ message: "AI SDKの初期化に失敗しました。" }), {
+        const detail = e instanceof Error ? e.message : String(e);
+        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}` }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -78,7 +53,15 @@ export async function onRequestPost(context) {
         contents: userPrompt,
     });
 
+    // According to guidelines, response.text directly gives the string output.
     const suggestionText = response.text;
+
+    if (suggestionText === undefined || suggestionText === null) {
+        console.error("Gemini API returned no text in response object:", response);
+        // Potentially inspect response.candidates[0].finishReason or safetyRatings if text is missing
+        // For example: response?.candidates?.[0]?.finishReason !== 'STOP'
+        throw new Error("AIからの応答にテキストが含まれていませんでした。APIからの応答を確認してください。");
+    }
 
     return new Response(JSON.stringify({ suggestion: suggestionText }), {
       status: 200,
@@ -88,13 +71,22 @@ export async function onRequestPost(context) {
   } catch (error) {
     console.error("Cloudflare Function内でエラーが発生しました:", error);
     let errorMessage = "AIとの通信中にサーバーでエラーが発生しました。";
-    if (error.message) {
+    if (error instanceof Error) {
+        // Use the error message directly if it's an Error object
         errorMessage = error.message;
+    } else if (typeof error === 'string') {
+        errorMessage = error;
     }
-    // Check for specific error types if needed, e.g., authentication errors from Gemini
-    if (error.toString().includes("API key not valid")) {
-        errorMessage = "サーバーに設定されたAPIキーが無効です。管理者に連絡してください。";
+    
+    // Enhance error message for specific known issues
+    if (errorMessage.toLowerCase().includes("api key not valid") || errorMessage.toLowerCase().includes("permission denied")) {
+        errorMessage = "サーバーに設定されたAPIキーが無効か、権限がありません。管理者に連絡してください。";
+    } else if (errorMessage.toLowerCase().includes("quota")) {
+        errorMessage = "APIの利用上限に達した可能性があります。時間をおいて再度お試しください。";
+    } else if (errorMessage.toLowerCase().includes("failed to fetch") || errorMessage.toLowerCase().includes("network error")) {
+        errorMessage = "AIサービスへのネットワーク接続に失敗しました。インターネット接続を確認するか、時間をおいて再度お試しください。";
     }
+
 
     return new Response(JSON.stringify({ message: errorMessage }), {
       status: 500,
