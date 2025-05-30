@@ -2,11 +2,9 @@
 // functions/api/suggestMeal.js
 
 // The @google/genai SDK is imported dynamically from esm.sh.
+const SDK_MODULE_URL = 'https://esm.sh/@google/genai'; // Hardcoded URL
 
 export async function onRequestPost(context) {
-  // Add a dummy query parameter for cache-busting. The 't' stands for time.
-  const sdkImportUrl = `https://esm.sh/@google/genai?t=${Date.now()}`; 
-
   try {
     // Environment variables are available on context.env
     const apiKey = context.env.API_KEY;
@@ -21,22 +19,21 @@ export async function onRequestPost(context) {
 
     let ai;
     try {
-        console.log(`[DEBUG] EXACT URL being passed to import(): '${sdkImportUrl}'`); // Enhanced logging
-        const genAIModule = await import(sdkImportUrl);
+        console.log(`[DEBUG] Attempting to import SDK directly from: '${SDK_MODULE_URL}'`);
+        const genAIModule = await import(SDK_MODULE_URL); 
         
         if (!genAIModule || !genAIModule.GoogleGenAI) {
-            console.error(`GoogleGenAI class not found in the imported module from ${sdkImportUrl}. Module content:`, JSON.stringify(genAIModule));
-            throw new Error(`Failed to load GoogleGenAI class from SDK via ${sdkImportUrl}.`);
+            console.error(`GoogleGenAI class not found in the imported module from ${SDK_MODULE_URL}. Module content:`, JSON.stringify(genAIModule));
+            throw new Error(`Failed to load GoogleGenAI class from SDK via ${SDK_MODULE_URL}.`);
         }
         ai = new genAIModule.GoogleGenAI({ apiKey });
-        console.log("GoogleGenAI SDK initialized successfully.");
+        console.log(`GoogleGenAI SDK initialized successfully from ${SDK_MODULE_URL}.`);
     } catch (e) {
-        console.error(`Failed to import or initialize GoogleGenAI from ${sdkImportUrl}:`, e);
+        console.error(`Failed to import or initialize GoogleGenAI from ${SDK_MODULE_URL}:`, e);
         const detail = e instanceof Error ? e.message : String(e);
-        // The error message "No such module 'https:/esm.sh/@google/genai'" strongly suggests a typo 
-        // (single '/' after 'https:') in the import URL in the *running* code.
-        // Ensure the deployed code uses 'https://' (double slash).
-        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}. Attempted SDK URL: ${sdkImportUrl}` }), {
+        // The error message "No such module 'https:/...'" might indicate a deeper issue
+        // within the Cloudflare Functions runtime or its interaction with esm.sh.
+        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}. Attempted SDK URL: ${SDK_MODULE_URL}` }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -84,7 +81,6 @@ export async function onRequestPost(context) {
         errorMessage = error;
     }
     
-    // More specific error messages based on content
     const lowerErrorMessage = errorMessage.toLowerCase();
     if (lowerErrorMessage.includes("api key not valid") || lowerErrorMessage.includes("permission denied") || lowerErrorMessage.includes("authentication failed")) {
         errorMessage = "サーバーに設定されたAPIキーが無効か、権限がありません。管理者に連絡してください。";
@@ -92,10 +88,9 @@ export async function onRequestPost(context) {
         errorMessage = "APIの利用上限に達した可能性があります。時間をおいて再度お試しください。";
     } else if (lowerErrorMessage.includes("failed to fetch") || lowerErrorMessage.includes("network error")) {
         errorMessage = "AIサービスへのネットワーク接続に失敗しました。インターネット接続を確認するか、時間をおいて再度お試しください。";
-    } else if (errorMessage.includes("No such module") && errorMessage.includes("https:/")) { // Check for the specific typo
-        errorMessage = `AI SDKのインポートURLにタイプミスがあるようです（例: 'https:/'）。デプロイされたコードを再確認し、Cloudflareのデプロイメントが最新であることを確認してください。詳細: ${errorMessage}`;
+    } else if (errorMessage.includes("No such module") && (errorMessage.includes("https:/") || errorMessage.includes("https%3a/"))) { 
+        errorMessage = `AI SDKのインポートURLに予期せぬ問題が発生しているようです（例: 'https:/'）。これはCloudflare Functionsランタイムとesm.shとの間の問題である可能性があります。詳細: ${errorMessage}`;
     }
-
 
     return new Response(JSON.stringify({ message: errorMessage }), {
       status: 500,
@@ -105,6 +100,7 @@ export async function onRequestPost(context) {
 }
 
 export async function onRequestGet(context) {
+  // Keep the GET handler for health checks or simple API status
   return new Response(JSON.stringify({ status: "OK", message: "AI Suggestion API is running." }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
