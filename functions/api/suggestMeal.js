@@ -2,12 +2,10 @@
 // functions/api/suggestMeal.js
 
 // The @google/genai SDK is imported dynamically from esm.sh.
-// This is a common approach for environments like Cloudflare Functions
-// when a traditional build step with package.json bundling for the function
-// itself is not explicitly configured or to ensure the latest compatible version is used.
 
 export async function onRequestPost(context) {
-  const sdkImportUrl = 'https://esm.sh/@google/genai'; // Define the URL for clarity and logging
+  // Add a dummy query parameter for cache-busting. The 't' stands for time.
+  const sdkImportUrl = `https://esm.sh/@google/genai?t=${Date.now()}`; 
 
   try {
     // Environment variables are available on context.env
@@ -23,11 +21,11 @@ export async function onRequestPost(context) {
 
     let ai;
     try {
-        console.log(`Attempting to import GoogleGenAI SDK from: ${sdkImportUrl}`);
+        console.log(`[DEBUG] EXACT URL being passed to import(): '${sdkImportUrl}'`); // Enhanced logging
         const genAIModule = await import(sdkImportUrl);
         
         if (!genAIModule || !genAIModule.GoogleGenAI) {
-            console.error(`GoogleGenAI class not found in the imported module from ${sdkImportUrl}. Module content:`, genAIModule);
+            console.error(`GoogleGenAI class not found in the imported module from ${sdkImportUrl}. Module content:`, JSON.stringify(genAIModule));
             throw new Error(`Failed to load GoogleGenAI class from SDK via ${sdkImportUrl}.`);
         }
         ai = new genAIModule.GoogleGenAI({ apiKey });
@@ -38,7 +36,7 @@ export async function onRequestPost(context) {
         // The error message "No such module 'https:/esm.sh/@google/genai'" strongly suggests a typo 
         // (single '/' after 'https:') in the import URL in the *running* code.
         // Ensure the deployed code uses 'https://' (double slash).
-        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}. SDK URL: ${sdkImportUrl}` }), {
+        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}. Attempted SDK URL: ${sdkImportUrl}` }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -66,7 +64,10 @@ export async function onRequestPost(context) {
         console.error("Gemini API returned no text in response object:", response);
         const finishReason = response?.candidates?.[0]?.finishReason;
         const safetyRatings = response?.candidates?.[0]?.safetyRatings;
-        throw new Error(`AIからの応答にテキストが含まれていませんでした。Finish reason: ${finishReason}, Safety ratings: ${JSON.stringify(safetyRatings)}`);
+        let detailMessage = `AIからの応答にテキストが含まれていませんでした。`;
+        if (finishReason) detailMessage += ` Finish reason: ${finishReason}.`;
+        if (safetyRatings) detailMessage += ` Safety ratings: ${JSON.stringify(safetyRatings)}.`;
+        throw new Error(detailMessage);
     }
 
     return new Response(JSON.stringify({ suggestion: suggestionText }), {
@@ -83,14 +84,16 @@ export async function onRequestPost(context) {
         errorMessage = error;
     }
     
-    if (errorMessage.toLowerCase().includes("api key not valid") || errorMessage.toLowerCase().includes("permission denied") || errorMessage.toLowerCase().includes("authentication failed")) {
+    // More specific error messages based on content
+    const lowerErrorMessage = errorMessage.toLowerCase();
+    if (lowerErrorMessage.includes("api key not valid") || lowerErrorMessage.includes("permission denied") || lowerErrorMessage.includes("authentication failed")) {
         errorMessage = "サーバーに設定されたAPIキーが無効か、権限がありません。管理者に連絡してください。";
-    } else if (errorMessage.toLowerCase().includes("quota")) {
+    } else if (lowerErrorMessage.includes("quota")) {
         errorMessage = "APIの利用上限に達した可能性があります。時間をおいて再度お試しください。";
-    } else if (errorMessage.toLowerCase().includes("failed to fetch") || errorMessage.toLowerCase().includes("network error")) {
+    } else if (lowerErrorMessage.includes("failed to fetch") || lowerErrorMessage.includes("network error")) {
         errorMessage = "AIサービスへのネットワーク接続に失敗しました。インターネット接続を確認するか、時間をおいて再度お試しください。";
-    } else if (errorMessage.includes("No such module") && errorMessage.includes(sdkImportUrl.replace("https://","https:/"))) {
-        errorMessage = `AI SDKのインポートに失敗しました。URLにタイプミスがある可能性があります（例: 'https:/' の代わりに 'https://'）。デプロイされたコードを確認してください。詳細: ${errorMessage}`;
+    } else if (errorMessage.includes("No such module") && errorMessage.includes("https:/")) { // Check for the specific typo
+        errorMessage = `AI SDKのインポートURLにタイプミスがあるようです（例: 'https:/'）。デプロイされたコードを再確認し、Cloudflareのデプロイメントが最新であることを確認してください。詳細: ${errorMessage}`;
     }
 
 
