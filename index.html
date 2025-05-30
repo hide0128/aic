@@ -22,7 +22,6 @@
   "imports": {
     "react": "https://esm.sh/react@^19.1.0",
     "react-dom/client": "https://esm.sh/react-dom@^19.1.0/client",
-    "@google/genai": "https://esm.sh/@google/genai@^1.1.0",
     "react-dom/": "https://esm.sh/react-dom@^19.1.0/",
     "react/": "https://esm.sh/react@^19.1.0/"
   }
@@ -34,17 +33,6 @@
   <script type="module">
     import React, { useState, useCallback } from 'react';
     import ReactDOM from 'react-dom/client';
-    import { GoogleGenAI } from "@google/genai";
-
-    // START: Type Definitions (Commented out as they are for TS, not runtime JS)
-    // interface Meal {
-    //   name: string;
-    //   description: string;
-    // }
-    // type MealTime = '朝食' | '昼食' | '夕食';
-    // type Cuisine = '和食' | '洋食' | '中華';
-    // type CookingTime = '指定なし' | '15分以内' | '30分以内' | '60分以内';
-    // END: Type Definitions
 
     // START: Constants
     const mealtimeOptions = [
@@ -83,40 +71,32 @@
     );
     // END: SVG Icon Components
 
-    // START: Gemini Service
-    // Attempt to get API_KEY from process.env, ensuring it doesn't crash in browser
-    const API_KEY = (typeof process !== 'undefined' && process.env && process.env.API_KEY) 
-                    ? process.env.API_KEY 
-                    : null;
-    let ai = null;
-
-    if (API_KEY) {
-      ai = new GoogleGenAI({ apiKey: API_KEY });
-    } else {
-      console.error("APIキーが環境変数 process.env.API_KEY に設定されていないか、アクセスできません。Gemini APIは利用できません。");
-      // Optionally, display a message to the user in the UI if API_KEY is critical
-    }
-
-    const suggestMealFromAPI = async (prompt) => {
-      if (!ai) {
-        // This error message will be displayed to the user if the API key is missing or AI client isn't initialized
-        throw new Error("AI献立サポーターが正しく設定されていません。APIキーが設定されているか確認してください。");
-      }
+    // START: API Service (using Cloudflare Function)
+    const suggestMealViaFunction = async (promptData) => {
       try {
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-04-17",
-            contents: prompt,
+        const response = await fetch('/api/suggestMeal', { // Cloudflare Function endpoint
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(promptData),
         });
-        return response.text;
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ message: response.statusText }));
+          throw new Error(errorData.message || `サーバーエラーが発生しました (${response.status})`);
+        }
+        const data = await response.json();
+        return data.suggestion; // Expecting { suggestion: "..." } from the function
       } catch (error) {
-        console.error("Gemini APIからの料理提案の取得中にエラーが発生しました:", error);
+        console.error("Cloudflare Functionからの料理提案の取得中にエラーが発生しました:", error);
         if (error instanceof Error) {
-          throw new Error(`AIからの応答取得中にエラーが発生しました: ${error.message}`);
+          throw new Error(`AIとの通信中にエラーが発生しました: ${error.message}`);
         }
         throw new Error("AIとの通信中に不明なエラーが発生しました。");
       }
     };
-    // END: Gemini Service
+    // END: API Service
 
     // START: LoadingSpinner Component
     const LoadingSpinner = () => {
@@ -149,13 +129,13 @@
       const [selectedCuisine, setSelectedCuisine] = useState('和食');
       const [numberOfSuggestions, setNumberOfSuggestions] = useState(1);
       const [selectedCookingTime, setSelectedCookingTime] = useState('指定なし');
+      const [isApiReady, setIsApiReady] = useState(true); // Assume API is ready, handle errors from fetch
 
       const parseMealSuggestion = (text) => {
         let name = "AIからの献立提案";
         let description = text;
 
-        // Corrected regex to use \n for newline matching
-        const nameRegex = /料理名：(.*?)\n/s; 
+        const nameRegex = /料理名：(.*?)\n/s;
         const descRegex = /説明：([\s\S]*)/s;
 
         const nameMatch = text.match(nameRegex);
@@ -186,11 +166,6 @@
       };
 
       const handleFetchMeal = useCallback(async () => {
-        if (!ai) { // Check if AI client is initialized before fetching
-          setError("AI献立サポーターが正しく設定されていません。APIキーが設定されているか確認してください。");
-          setIsLoading(false);
-          return;
-        }
         setIsLoading(true);
         setError(null);
         setMealSuggestions(null);
@@ -201,13 +176,19 @@
           }
           const prompt = `今日の${selectedMealtime}におすすめの、${selectedCuisine}で、${cookingTimeConstraint}美味しくて比較的簡単に作れる料理を${numberOfSuggestions}品提案してください。各提案は「料理名：<ここに料理名>\\n説明：<ここに料理の説明（2〜3文程度）>」の形式で記述し、提案と提案の間は「---次の提案---」という区切り文字で明確に区切ってください。`;
           
-          const rawSuggestion = await suggestMealFromAPI(prompt);
+          const rawSuggestion = await suggestMealViaFunction({ prompt }); // Use the new function
+          if (!rawSuggestion) {
+            setError('AIから有効な応答がありませんでした。');
+            setIsLoading(false);
+            return;
+          }
+
           const suggestionBlocks = rawSuggestion.split("---次の提案---");
           const parsedSuggestions = suggestionBlocks.map(block => parseMealSuggestion(block.trim())).filter(meal => meal.name && meal.description && meal.name !== "AIからの献立提案");
 
           if (parsedSuggestions.length === 0 && rawSuggestion.trim() !== "") {
             const singleParsed = parseMealSuggestion(rawSuggestion.trim());
-            if (singleParsed.name !== "AIからの献立提案" || singleParsed.description !== "詳しい説明はありませんでした.") {
+             if (singleParsed.name !== "AIからの献立提案" || singleParsed.description !== "詳しい説明はありませんでした.") {
                setMealSuggestions([singleParsed]);
             } else {
               setError('条件に合う料理が見つかりませんでした。条件を変えてお試しください。');
@@ -218,12 +199,24 @@
             setError('条件に合う料理が見つかりませんでした。条件を変えてお試しください。');
           }
         } catch (err) {
-          setError(err instanceof Error ? err.message : '料理の提案を取得できませんでした。もう一度お試しください。');
+          const errorMessage = err instanceof Error ? err.message : '料理の提案を取得できませんでした。もう一度お試しください。';
+          setError(errorMessage);
+          if (errorMessage.includes("APIキー") || errorMessage.includes("authentication")) {
+            setIsApiReady(false); // If error indicates API key issue, update state
+          }
           console.error(err);
         } finally {
           setIsLoading(false);
         }
       }, [selectedMealtime, selectedCuisine, numberOfSuggestions, selectedCookingTime]);
+
+      // Check API readiness on mount (optional, as errors are handled during fetch)
+      // useEffect(() => {
+      //  fetch('/api/suggestMeal', { method: 'HEAD' }) // Simple check if endpoint exists
+      //    .then(res => setIsApiReady(res.ok))
+      //    .catch(() => setIsApiReady(false));
+      // }, []);
+
 
       return (
         React.createElement('div', { className: "min-h-screen flex flex-col items-center justify-center p-4 text-center text-gray-800 selection:bg-blue-200 selection:text-blue-800" },
@@ -235,7 +228,7 @@
             React.createElement('p', { className: "text-lg text-gray-600" }, "今日の晩ごはんに迷ったら、AIにおまかせ！")
           ),
           React.createElement('main', { className: "w-full max-w-lg" },
-            !isLoading && !mealSuggestions?.length && !error && (
+            !isLoading && !mealSuggestions?.length && !error && isApiReady && (
               React.createElement('p', { className: "text-xl text-gray-700 mb-6 bg-white/70 p-6 rounded-lg shadow-md" },
                 "条件を選んで、AIに今日の献立を提案してもらいましょう！"
               )
@@ -334,12 +327,12 @@
             ),
             React.createElement('button', {
               onClick: handleFetchMeal,
-              disabled: isLoading || !ai, // Disable button if AI not initialized
+              disabled: isLoading || !isApiReady, // Disable button if API not ready or loading
               className: "flex items-center justify-center w-full max-w-xs mx-auto bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:shadow-xl transform transition-all duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75",
               'aria-live': "polite"
             },
               React.createElement(LightBulbIconComponent, { className: "w-5 h-5 mr-2" }),
-              isLoading ? '考え中...' : '献立を提案してもらう'
+              isLoading ? '考え中...' : (isApiReady ? '献立を提案してもらう' : 'AI機能 利用不可')
             ),
             isLoading && React.createElement(LoadingSpinner, null),
             error && (
@@ -348,13 +341,13 @@
                 React.createElement('p', null, error)
               )
             ),
-             !ai && !error && !isLoading && ( // Display a message if API key is not set and no other error/loading shown
+             !isApiReady && !isLoading && ( // Display a message if API is not ready
               React.createElement('div', { className: "mt-6 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md shadow", role: "status" },
                 React.createElement('p', { className: "font-bold" }, "AI機能の準備ができていません"),
-                React.createElement('p', null, "APIキーが設定されていないため、献立提案機能は利用できません。")
+                React.createElement('p', null, "サーバー側で問題が発生しているか、APIキーが正しく設定されていない可能性があります。管理者に連絡してください。")
               )
             ),
-            mealSuggestions && mealSuggestions.length > 0 && !isLoading && !error && (
+            mealSuggestions && mealSuggestions.length > 0 && !isLoading && !error && isApiReady && (
               React.createElement('div', { className: "mt-8 space-y-6" },
                 mealSuggestions.map((meal, index) => (
                   React.createElement(MealDisplay, { key: `${meal.name}-${index}`, meal: meal })
@@ -380,5 +373,6 @@
     // END: ReactDOM Rendering
   </script>
 </body>
-</html><link rel="stylesheet" href="index.css">
+</html>
+<link rel="stylesheet" href="index.css">
 <script src="index.tsx" type="module"></script>
