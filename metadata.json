@@ -1,5 +1,5 @@
 {
-  "name": "pub_AI献立サポーター",
+  "name": "pub_res_AI献立サポーター",
   "description": "AIが今日の献立を提案してくれるアプリケーションです。ボタンを押すだけで、美味しくて簡単な料理のアイデアを得られます。",
   "requestFramePermissions": [],
   "prompt": ""

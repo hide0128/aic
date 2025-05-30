@@ -37,13 +37,12 @@ export async function onRequestPost(context) {
           ],
         },
       ],
-      // 必要であればここに generationConfig を追加できます
-      // generationConfig: {
-      //   temperature: 0.7,
-      //   topK: 1,
-      //   topP: 1,
-      //   maxOutputTokens: 2048,
-      // },
+      generationConfig: {
+        temperature: 0.7, // 応答のランダム性を高める (0.0 - 1.0)
+        // topK: 1, // 必要に応じて設定
+        // topP: 1, // 必要に応じて設定
+        // maxOutputTokens: 2048, // 必要に応じて設定
+      },
     };
 
     console.log(`Sending request to Gemini API: ${GEMINI_API_URL}`);
