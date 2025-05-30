@@ -2,7 +2,8 @@
 // functions/api/suggestMeal.js
 
 // The @google/genai SDK is imported dynamically from esm.sh.
-const SDK_MODULE_URL = 'https://esm.sh/@google/genai'; // Hardcoded URL
+// Attempting a more specific URL for esm.sh
+const SDK_MODULE_URL = 'https://esm.sh/@google/genai?target=esnext&format=esm';
 
 export async function onRequestPost(context) {
   try {
@@ -19,7 +20,7 @@ export async function onRequestPost(context) {
 
     let ai;
     try {
-        console.log(`[DEBUG] Attempting to import SDK directly from: '${SDK_MODULE_URL}'`);
+        console.log(`[DEBUG] Attempting to import SDK from specific esm.sh URL: '${SDK_MODULE_URL}'`);
         const genAIModule = await import(SDK_MODULE_URL); 
         
         if (!genAIModule || !genAIModule.GoogleGenAI) {
