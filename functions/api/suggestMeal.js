@@ -1,13 +1,10 @@
 
 // functions/api/suggestMeal.js
 
-// The @google/genai SDK is imported dynamically from esm.sh.
-// Attempting a more specific URL for esm.sh
-const SDK_MODULE_URL = 'https://esm.sh/@google/genai?target=esnext&format=esm';
+const GEMINI_API_MODEL = "gemini-2.5-flash-preview-04-17";
 
 export async function onRequestPost(context) {
   try {
-    // Environment variables are available on context.env
     const apiKey = context.env.API_KEY;
 
     if (!apiKey) {
@@ -18,28 +15,6 @@ export async function onRequestPost(context) {
       });
     }
 
-    let ai;
-    try {
-        console.log(`[DEBUG] Attempting to import SDK from specific esm.sh URL: '${SDK_MODULE_URL}'`);
-        const genAIModule = await import(SDK_MODULE_URL); 
-        
-        if (!genAIModule || !genAIModule.GoogleGenAI) {
-            console.error(`GoogleGenAI class not found in the imported module from ${SDK_MODULE_URL}. Module content:`, JSON.stringify(genAIModule));
-            throw new Error(`Failed to load GoogleGenAI class from SDK via ${SDK_MODULE_URL}.`);
-        }
-        ai = new genAIModule.GoogleGenAI({ apiKey });
-        console.log(`GoogleGenAI SDK initialized successfully from ${SDK_MODULE_URL}.`);
-    } catch (e) {
-        console.error(`Failed to import or initialize GoogleGenAI from ${SDK_MODULE_URL}:`, e);
-        const detail = e instanceof Error ? e.message : String(e);
-        // The error message "No such module 'https:/...'" might indicate a deeper issue
-        // within the Cloudflare Functions runtime or its interaction with esm.sh.
-        return new Response(JSON.stringify({ message: `AI SDKの初期化に失敗しました: ${detail}. Attempted SDK URL: ${SDK_MODULE_URL}` }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-        });
-    }
-    
     const requestBody = await context.request.json();
     const userPrompt = requestBody.prompt;
 
@@ -49,48 +24,107 @@ export async function onRequestPost(context) {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    
-    console.log("Generating content with model gemini-2.5-flash-preview-04-17");
-    const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-04-17",
-        contents: userPrompt,
+
+    const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_API_MODEL}:generateContent?key=${apiKey}`;
+
+    const geminiRequestBody = {
+      contents: [
+        {
+          parts: [
+            {
+              text: userPrompt,
+            },
+          ],
+        },
+      ],
+      // 必要であればここに generationConfig を追加できます
+      // generationConfig: {
+      //   temperature: 0.7,
+      //   topK: 1,
+      //   topP: 1,
+      //   maxOutputTokens: 2048,
+      // },
+    };
+
+    console.log(`Sending request to Gemini API: ${GEMINI_API_URL}`);
+    const apiResponse = await fetch(GEMINI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(geminiRequestBody),
     });
 
-    const suggestionText = response.text;
-
-    if (suggestionText === undefined || suggestionText === null) {
-        console.error("Gemini API returned no text in response object:", response);
-        const finishReason = response?.candidates?.[0]?.finishReason;
-        const safetyRatings = response?.candidates?.[0]?.safetyRatings;
-        let detailMessage = `AIからの応答にテキストが含まれていませんでした。`;
-        if (finishReason) detailMessage += ` Finish reason: ${finishReason}.`;
-        if (safetyRatings) detailMessage += ` Safety ratings: ${JSON.stringify(safetyRatings)}.`;
-        throw new Error(detailMessage);
+    if (!apiResponse.ok) {
+      let errorData;
+      try {
+        errorData = await apiResponse.json();
+        console.error("Gemini API Error Response:", errorData);
+      } catch (e) {
+        console.error("Failed to parse Gemini API Error Response:", apiResponse.statusText);
+        errorData = { error: { message: `Gemini API request failed with status: ${apiResponse.status} ${apiResponse.statusText}` } };
+      }
+      const errorMessage = errorData?.error?.message || `Gemini APIリクエストに失敗しました (${apiResponse.status})。`;
+      // APIキー関連のエラーをより具体的に判定
+      if (apiResponse.status === 400 && errorMessage.toLowerCase().includes("api key not valid")) {
+         throw new Error("サーバーに設定されたAPIキーが無効です。管理者に連絡してください。");
+      }
+      if (apiResponse.status === 403 && errorMessage.toLowerCase().includes("permission denied")) {
+         throw new Error("APIキーにGemini APIを利用する権限がありません。管理者に連絡してください。");
+      }
+      throw new Error(errorMessage);
     }
 
-    return new Response(JSON.stringify({ suggestion: suggestionText }), {
+    const responseData = await apiResponse.json();
+    
+    // 生成されたテキストの抽出 (より安全なアクセス)
+    const candidate = responseData?.candidates?.[0];
+    if (!candidate) {
+        let blockReason = responseData?.promptFeedback?.blockReason;
+        if (blockReason) {
+            console.warn(`Gemini API did not return candidates, prompt blocked. Reason: ${blockReason}`);
+            throw new Error(`AIの応答がブロックされました。理由: ${blockReason}。不適切な内容が含まれていないか確認してください。`);
+        }
+        console.error("Gemini API response missing candidates:", responseData);
+        throw new Error("AIからの応答に候補が含まれていませんでした。");
+    }
+
+    const textPart = candidate?.content?.parts?.[0]?.text;
+    if (typeof textPart !== 'string') {
+      console.error("Gemini API response missing text part or text is not a string:", candidate);
+      const finishReason = candidate?.finishReason;
+      const safetyRatings = candidate?.safetyRatings;
+      let detailMessage = `AIからの応答にテキスト部分が見つかりませんでした。`;
+      if (finishReason) detailMessage += ` 終了理由: ${finishReason}.`;
+      if (safetyRatings) detailMessage += ` 安全性評価: ${JSON.stringify(safetyRatings)}.`;
+      if (finishReason === "SAFETY") {
+        detailMessage = `AIの応答が安全性基準によりブロックされました。不適切な内容が含まれていないか確認してください。評価: ${JSON.stringify(safetyRatings)}`;
+      }
+      throw new Error(detailMessage);
+    }
+
+    return new Response(JSON.stringify({ suggestion: textPart }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
     console.error("Cloudflare Function内でエラーが発生しました:", error);
-    let errorMessage = "AIとの通信中にサーバーでエラーが発生しました。";
+    let errorMessage = "AIとの通信中にサーバーで予期せぬエラーが発生しました。";
     if (error instanceof Error) {
-        errorMessage = error.message;
+      errorMessage = error.message;
     } else if (typeof error === 'string') {
-        errorMessage = error;
+      errorMessage = error;
     }
-    
+
+    // エラーメッセージに基づいてフロントエンドに返すメッセージを調整
     const lowerErrorMessage = errorMessage.toLowerCase();
-    if (lowerErrorMessage.includes("api key not valid") || lowerErrorMessage.includes("permission denied") || lowerErrorMessage.includes("authentication failed")) {
-        errorMessage = "サーバーに設定されたAPIキーが無効か、権限がありません。管理者に連絡してください。";
+    if (lowerErrorMessage.includes("apiキーが無効") || lowerErrorMessage.includes("permission denied")) {
+        // このメッセージはすでにスローされているので、ここでは一般的なメッセージでよい
     } else if (lowerErrorMessage.includes("quota")) {
         errorMessage = "APIの利用上限に達した可能性があります。時間をおいて再度お試しください。";
     } else if (lowerErrorMessage.includes("failed to fetch") || lowerErrorMessage.includes("network error")) {
         errorMessage = "AIサービスへのネットワーク接続に失敗しました。インターネット接続を確認するか、時間をおいて再度お試しください。";
-    } else if (errorMessage.includes("No such module") && (errorMessage.includes("https:/") || errorMessage.includes("https%3a/"))) { 
-        errorMessage = `AI SDKのインポートURLに予期せぬ問題が発生しているようです（例: 'https:/'）。これはCloudflare Functionsランタイムとesm.shとの間の問題である可能性があります。詳細: ${errorMessage}`;
     }
 
     return new Response(JSON.stringify({ message: errorMessage }), {
@@ -101,8 +135,8 @@ export async function onRequestPost(context) {
 }
 
 export async function onRequestGet(context) {
-  // Keep the GET handler for health checks or simple API status
-  return new Response(JSON.stringify({ status: "OK", message: "AI Suggestion API is running." }), {
+  // GETハンドラはヘルスチェックやAPIステータス確認のために維持
+  return new Response(JSON.stringify({ status: "OK", message: "AI Suggestion API (REST via CF Function) is running." }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });
