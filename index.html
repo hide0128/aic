@@ -84,18 +84,23 @@
     // END: SVG Icon Components
 
     // START: Gemini Service
-    const API_KEY = process.env.API_KEY; 
+    // Attempt to get API_KEY from process.env, ensuring it doesn't crash in browser
+    const API_KEY = (typeof process !== 'undefined' && process.env && process.env.API_KEY) 
+                    ? process.env.API_KEY 
+                    : null;
     let ai = null;
 
     if (API_KEY) {
       ai = new GoogleGenAI({ apiKey: API_KEY });
     } else {
-      console.error("APIキーが環境変数 process.env.API_KEY に設定されていません。Gemini APIは利用できません。");
+      console.error("APIキーが環境変数 process.env.API_KEY に設定されていないか、アクセスできません。Gemini APIは利用できません。");
+      // Optionally, display a message to the user in the UI if API_KEY is critical
     }
 
     const suggestMealFromAPI = async (prompt) => {
       if (!ai) {
-        throw new Error("Gemini APIクライアントが初期化されていません。管理者にお問い合わせください。");
+        // This error message will be displayed to the user if the API key is missing or AI client isn't initialized
+        throw new Error("AI献立サポーターが正しく設定されていません。APIキーが設定されているか確認してください。");
       }
       try {
         const response = await ai.models.generateContent({
@@ -181,6 +186,11 @@
       };
 
       const handleFetchMeal = useCallback(async () => {
+        if (!ai) { // Check if AI client is initialized before fetching
+          setError("AI献立サポーターが正しく設定されていません。APIキーが設定されているか確認してください。");
+          setIsLoading(false);
+          return;
+        }
         setIsLoading(true);
         setError(null);
         setMealSuggestions(null);
@@ -189,9 +199,6 @@
           if (selectedCookingTime !== '指定なし') {
             cookingTimeConstraint = `調理時間は${selectedCookingTime}を目安とした、`;
           }
-          // Ensure prompt uses \n for actual newlines if the AI is expected to output them.
-          // The current prompt string `...料理名：<ここに料理名>\\n説明：...` will correctly result in a prompt
-          // containing an actual newline character for the AI to follow.
           const prompt = `今日の${selectedMealtime}におすすめの、${selectedCuisine}で、${cookingTimeConstraint}美味しくて比較的簡単に作れる料理を${numberOfSuggestions}品提案してください。各提案は「料理名：<ここに料理名>\\n説明：<ここに料理の説明（2〜3文程度）>」の形式で記述し、提案と提案の間は「---次の提案---」という区切り文字で明確に区切ってください。`;
           
           const rawSuggestion = await suggestMealFromAPI(prompt);
@@ -327,7 +334,7 @@
             ),
             React.createElement('button', {
               onClick: handleFetchMeal,
-              disabled: isLoading,
+              disabled: isLoading || !ai, // Disable button if AI not initialized
               className: "flex items-center justify-center w-full max-w-xs mx-auto bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:shadow-xl transform transition-all duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75",
               'aria-live': "polite"
             },
@@ -339,6 +346,12 @@
               React.createElement('div', { className: "mt-6 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow", role: "alert" },
                 React.createElement('p', { className: "font-bold" }, "エラーが発生しました"),
                 React.createElement('p', null, error)
+              )
+            ),
+             !ai && !error && !isLoading && ( // Display a message if API key is not set and no other error/loading shown
+              React.createElement('div', { className: "mt-6 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md shadow", role: "status" },
+                React.createElement('p', { className: "font-bold" }, "AI機能の準備ができていません"),
+                React.createElement('p', null, "APIキーが設定されていないため、献立提案機能は利用できません。")
               )
             ),
             mealSuggestions && mealSuggestions.length > 0 && !isLoading && !error && (
