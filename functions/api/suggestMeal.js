@@ -38,7 +38,8 @@ export async function onRequestPost(context) {
         },
       ],
       generationConfig: {
-        temperature: 0.7, // 応答のランダム性を高める (0.0 - 1.0)
+        temperature: 0.85, // 応答のランダム性をより高める (0.0 - 1.0)
+        seed: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER), // リクエストごとにランダムなseedを設定
         // topK: 1, // 必要に応じて設定
         // topP: 1, // 必要に応じて設定
         // maxOutputTokens: 2048, // 必要に応じて設定
@@ -46,6 +47,8 @@ export async function onRequestPost(context) {
     };
 
     console.log(`Sending request to Gemini API: ${GEMINI_API_URL}`);
+    console.log(`Request body with generationConfig: ${JSON.stringify(geminiRequestBody.generationConfig)}`);
+
     const apiResponse = await fetch(GEMINI_API_URL, {
       method: 'POST',
       headers: {
